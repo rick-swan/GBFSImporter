@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="GbfsSystemsImporter.Api/GbfsSystemsImporter.Api.csproj" />
+  <Project Path="GbfsSystemsImporter.Web/GbfsSystemsImporter.Web.csproj" />
+  <Project Path="GbfsSystemsImporter/GbfsSystemsImporter.csproj" />
+</Solution>

@@ -1,0 +1,201 @@
+@page "/systems"
+@using GbfsSystemsImporter.Services
+@inject DatabaseService Db
+@inject NavigationManager Nav
+
+<PageTitle>Systems</PageTitle>
+
+<h1>Systems</h1>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+    <div class="col-md-3">
+        <label for="name" class="form-label mb-1">Name contains</label>
+        <input class="form-control form-control-sm" id="name" name="Name" value="@Name" placeholder="e.g. beryl"/>
+    </div>
+    <div class="col-md-3">
+        <label for="loc" class="form-label mb-1">Location contains</label>
+        <input class="form-control form-control-sm" id="loc" name="Location" value="@Location" placeholder="e.g. london"/>
+    </div>
+    <div class="col-md-2">
+        <label for="cc" class="form-label mb-1">Country</label>
+        <select class="form-select form-select-sm" id="cc" name="Country">
+            <option value="">all</option>
+            @foreach (var c in countries)
+            {
+                <option value="@c" selected="@(c == Country)">@c</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label for="auth" class="form-label mb-1">Auth type</label>
+        <input class="form-control form-control-sm" id="auth" name="AuthType" value="@AuthType" placeholder="e.g. api_key"/>
+    </div>
+    <div class="col-md-2">
+        <label for="enabled" class="form-label mb-1">Status</label>
+        <select class="form-select form-select-sm" id="enabled" name="Enabled">
+            <option value=""        selected="@(string.IsNullOrEmpty(Enabled))">all</option>
+            <option value="true"    selected="@(Enabled == "true")">enabled</option>
+            <option value="false"   selected="@(Enabled == "false")">disabled</option>
+        </select>
+    </div>
+    <div class="col-md-12 d-flex gap-2">
+        <button class="btn btn-primary btn-sm" type="submit">Apply filters</button>
+        <a class="btn btn-outline-secondary btn-sm" href="/systems">Clear</a>
+    </div>
+</form>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <small class="text-muted">
+        <strong>@totalCount.ToString("N0")</strong> systems matching
+        &middot; <strong>@enabledCount.ToString("N0")</strong> enabled overall
+    </small>
+    @if (totalPages > 1)
+    {
+        <small class="text-muted">page @currentPage of @totalPages</small>
+    }
+</div>
+
+@if (rows.Count == 0)
+{
+    <div class="alert alert-warning">No systems match the filter.</div>
+}
+else
+{
+    <form method="post" @formname="toggle-system">
+        <AntiforgeryToken/>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>System ID</th>
+                        <th>Name</th>
+                        <th>Country</th>
+                        <th>Location</th>
+                        <th>Versions</th>
+                        <th>Auth</th>
+                        <th class="text-end">Stations</th>
+                        <th class="text-end">Zones</th>
+                        <th class="text-end">Snapshots</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td><a href="@($"/systems/{r.SystemId}")"><code>@r.SystemId</code></a></td>
+                            <td>@r.Name</td>
+                            <td>@r.CountryCode</td>
+                            <td>@r.Location</td>
+                            <td><small>@r.SupportedVersions</small></td>
+                            <td><small>@(r.AuthenticationType ?? "—")</small></td>
+                            <td class="text-end">@r.StationCount</td>
+                            <td class="text-end">@r.ZoneCount</td>
+                            <td class="text-end">@r.StatusCount</td>
+                            <td>
+                                @if (r.IsEnabled)
+                                {
+                                    <span class="badge bg-success">enabled</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">disabled</span>
+                                }
+                            </td>
+                            <td class="text-end">
+                                <button type="submit"
+                                        name="ToggleSystemId"
+                                        value="@r.SystemId"
+                                        class="btn btn-sm @(r.IsEnabled ? "btn-outline-danger" : "btn-outline-success")">
+                                    @(r.IsEnabled ? "Disable" : "Enable")
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </form>
+
+    @if (totalPages > 1)
+    {
+        <nav>
+            <ul class="pagination pagination-sm">
+                <li class="page-item @(currentPage <= 1 ? "disabled" : "")">
+                    <a class="page-link" href="@PageUrl(currentPage - 1)">‹ prev</a>
+                </li>
+                <li class="page-item active"><span class="page-link">@currentPage</span></li>
+                <li class="page-item @(currentPage >= totalPages ? "disabled" : "")">
+                    <a class="page-link" href="@PageUrl(currentPage + 1)">next ›</a>
+                </li>
+            </ul>
+        </nav>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery] public string? Name { get; set; }
+    [SupplyParameterFromQuery] public string? Location { get; set; }
+    [SupplyParameterFromQuery] public string? Country { get; set; }
+    [SupplyParameterFromQuery] public string? AuthType { get; set; }
+    [SupplyParameterFromQuery] public string? Enabled { get; set; }
+    [SupplyParameterFromQuery(Name = "page")] public int? Page { get; set; }
+
+    [SupplyParameterFromForm(FormName = "toggle-system")] public string? ToggleSystemId { get; set; }
+
+    private const int PageSize = 50;
+
+    private List<SystemListRow> rows = new();
+    private List<string> countries = new();
+    private int totalCount;
+    private int enabledCount;
+    private int currentPage = 1;
+    private int totalPages = 1;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrEmpty(ToggleSystemId))
+        {
+            await Db.ToggleSystemEnabledAsync(ToggleSystemId);
+        }
+
+        currentPage = Math.Max(1, Page ?? 1);
+        countries = await Db.ListDistinctCountryCodesAsync();
+
+        bool? enabledFilter = Enabled switch
+        {
+            "true"  => true,
+            "false" => false,
+            _       => null,
+        };
+
+        var filter = new SystemListFilter(
+            NameLike: Name,
+            LocationLike: Location,
+            CountryCode: Country,
+            AuthType: AuthType,
+            Enabled: enabledFilter);
+
+        var result = await Db.ListSystemsAsync(filter, currentPage, PageSize);
+        rows = result.Rows;
+        totalCount = result.TotalCount;
+        totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
+
+        var enabledOnly = await Db.ListSystemsAsync(
+            new SystemListFilter(Enabled: true), 1, 1);
+        enabledCount = enabledOnly.TotalCount;
+    }
+
+    private string PageUrl(int p)
+    {
+        var qs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(Name))     qs.Add($"Name={Uri.EscapeDataString(Name)}");
+        if (!string.IsNullOrWhiteSpace(Location)) qs.Add($"Location={Uri.EscapeDataString(Location)}");
+        if (!string.IsNullOrWhiteSpace(Country))  qs.Add($"Country={Uri.EscapeDataString(Country)}");
+        if (!string.IsNullOrWhiteSpace(AuthType)) qs.Add($"AuthType={Uri.EscapeDataString(AuthType)}");
+        if (!string.IsNullOrEmpty(Enabled))       qs.Add($"Enabled={Enabled}");
+        qs.Add($"page={p}");
+        return "/systems?" + string.Join("&", qs);
+    }
+}

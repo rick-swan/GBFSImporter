@@ -1,0 +1,141 @@
+@page "/stations"
+@using GbfsSystemsImporter.Services
+@inject DatabaseService Db
+
+<PageTitle>Stations &amp; availability</PageTitle>
+
+<h1>Stations &amp; availability</h1>
+
+@if (systems.Count == 0)
+{
+    <div class="alert alert-info">
+        No systems have <em>both</em> <code>dbo.Stations</code> and <code>dbo.StationStatuses</code> data yet.
+        Import stations with
+        <code>dotnet run --project GbfsSystemsImporter -- import-stations &lt;system-id&gt;</code>
+        and schedule a status job via the API
+        (<code>POST /api/jobs/station-status</code>).
+    </div>
+}
+else
+{
+    <form method="get" class="row g-2 align-items-end mb-3">
+        <div class="col-md-7">
+            <label for="systemSelect" class="form-label">Service</label>
+            <select id="systemSelect" name="SystemId" class="form-select" onchange="this.form.submit()">
+                <option value="">— select a service —</option>
+                @foreach (var s in systems)
+                {
+                    <option value="@s.SystemId" selected="@(s.SystemId == SystemId)">
+                        @s.Name — @s.CountryCode / @s.Location
+                        (@s.StationCount stations, @s.StatusCount snapshots)
+                    </option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label for="search" class="form-label">Filter (name or id)</label>
+            <input id="search" name="Search" value="@Search" class="form-control" placeholder="contains…"/>
+        </div>
+        <div class="col-md-2">
+            <button class="btn btn-primary w-100" type="submit">Apply</button>
+        </div>
+    </form>
+}
+
+@if (selected is not null)
+{
+    <div class="row g-3 mb-3">
+        @SummaryCard("Stations", selected.StationCount.ToString("N0"))
+        @SummaryCard("Snapshots", selected.StatusCount.ToString("N0"))
+        @SummaryCard("First captured (UTC)", selected.FirstFetchedUtc?.ToString("yyyy-MM-dd HH:mm") ?? "—")
+        @SummaryCard("Latest captured (UTC)", selected.LastFetchedUtc?.ToString("yyyy-MM-dd HH:mm") ?? "—")
+    </div>
+
+    @if (rows.Count == 0)
+    {
+        <div class="alert alert-warning">No stations match the filter.</div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Station ID</th>
+                        <th>Name</th>
+                        <th class="text-end">Capacity</th>
+                        <th class="text-end">Vehicles avail.</th>
+                        <th class="text-end">Vehicles disabled</th>
+                        <th class="text-end">Docks avail.</th>
+                        <th class="text-end">Docks disabled</th>
+                        <th class="text-center">Renting</th>
+                        <th class="text-center">Returning</th>
+                        <th>Last reported (UTC)</th>
+                        <th>Snapshot (UTC)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in rows)
+                    {
+                        var hasStatus = r.LatestFetchedUtc is not null;
+                        <tr class="@(hasStatus ? "" : "text-muted")">
+                            <td><code>@r.StationId</code></td>
+                            <td>@(r.Name ?? "—")</td>
+                            <td class="text-end">@(r.Capacity?.ToString() ?? "—")</td>
+                            <td class="text-end">@FormatNum(r.NumVehiclesAvailable)</td>
+                            <td class="text-end">@FormatNum(r.NumVehiclesDisabled)</td>
+                            <td class="text-end">@FormatNum(r.NumDocksAvailable)</td>
+                            <td class="text-end">@FormatNum(r.NumDocksDisabled)</td>
+                            <td class="text-center">@FormatBool(r.IsRenting)</td>
+                            <td class="text-center">@FormatBool(r.IsReturning)</td>
+                            <td>@(r.LastReportedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td>
+                            <td>@(r.LatestFetchedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <p class="text-muted small mb-0">
+            Showing <strong>@rows.Count</strong> of <strong>@selected.StationCount</strong> stations
+            for <code>@SystemId</code>. Snapshot column shows when the API last captured this station's
+            status; rows without a snapshot mean it wasn't in the most recent <code>station_status</code> feed.
+        </p>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery] public string? SystemId { get; set; }
+    [SupplyParameterFromQuery] public string? Search { get; set; }
+
+    private List<SystemAvailabilityOption> systems = new();
+    private List<StationWithLatestStatus> rows = new();
+    private SystemAvailabilityOption? selected;
+
+    protected override async Task OnInitializedAsync()
+    {
+        systems = await Db.ListSystemsWithStationsAndStatusesAsync();
+        if (!string.IsNullOrEmpty(SystemId))
+        {
+            selected = systems.FirstOrDefault(x => x.SystemId == SystemId);
+            if (selected is not null)
+                rows = await Db.GetStationsWithLatestStatusAsync(SystemId, Search);
+        }
+    }
+
+    private static RenderFragment SummaryCard(string label, string value) => @<div class="col-md-3">
+        <div class="card">
+            <div class="card-body py-2 px-3">
+                <div class="text-muted small">@label</div>
+                <div class="fs-5 fw-semibold">@value</div>
+            </div>
+        </div>
+    </div>;
+
+    private static string FormatNum(int? n) => n?.ToString() ?? "—";
+    private static MarkupString FormatBool(bool? b) => b switch
+    {
+        true  => new MarkupString("<span class=\"badge bg-success\">yes</span>"),
+        false => new MarkupString("<span class=\"badge bg-danger\">no</span>"),
+        _     => new MarkupString("—"),
+    };
+}

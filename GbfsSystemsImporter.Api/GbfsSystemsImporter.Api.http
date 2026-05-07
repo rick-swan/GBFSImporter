@@ -1,0 +1,6 @@
+@GbfsSystemsImporter.Api_HostAddress = http://localhost:5136
+
+GET {{GbfsSystemsImporter.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

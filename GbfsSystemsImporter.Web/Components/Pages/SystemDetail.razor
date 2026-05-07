@@ -1,0 +1,201 @@
+@page "/systems/{SystemId}"
+@using GbfsSystemsImporter.Services
+@using GbfsSystemsImporter.Models
+@inject DatabaseService Db
+@inject GbfsFeedService Feed
+
+<PageTitle>@(system?.Name ?? SystemId)</PageTitle>
+
+<p class="mb-2">
+    <a href="/systems" class="text-decoration-none">&larr; back to systems</a>
+</p>
+
+@if (system is null)
+{
+    <div class="alert alert-danger">
+        System <code>@SystemId</code> not found.
+    </div>
+}
+else
+{
+    <h1 class="mb-1">@system.Name</h1>
+    <p class="text-muted mb-3">
+        <code>@system.SystemId</code> &middot; @system.CountryCode / @system.Location
+        @if (system.IsEnabled is true)
+        {
+            <span class="badge bg-success ms-2">enabled</span>
+        }
+        else
+        {
+            <span class="badge bg-secondary ms-2">disabled</span>
+        }
+    </p>
+
+    <div class="row g-3 mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body py-2 px-3">
+                    <div class="text-muted small">Operator URL</div>
+                    @if (!string.IsNullOrEmpty(system.Url))
+                    {
+                        <a href="@system.Url" target="_blank" rel="noopener" class="text-break">@system.Url</a>
+                    }
+                    else
+                    {
+                        <em class="text-muted">none</em>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body py-2 px-3">
+                    <div class="text-muted small">GBFS auto-discovery URL</div>
+                    @if (!string.IsNullOrEmpty(system.AutoDiscoveryUrl))
+                    {
+                        <a href="@system.AutoDiscoveryUrl" target="_blank" rel="noopener" class="text-break">@system.AutoDiscoveryUrl</a>
+                    }
+                    else
+                    {
+                        <em class="text-muted">none</em>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body py-2 px-3">
+                <div class="text-muted small">Versions</div>
+                <div>@(system.SupportedVersions ?? "—")</div>
+            </div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body py-2 px-3">
+                <div class="text-muted small">Auth type</div>
+                <div>@(system.AuthenticationType ?? "—")</div>
+            </div></div>
+        </div>
+    </div>
+
+    <h2 class="h5">Discovery (gbfs.json)</h2>
+
+    @if (string.IsNullOrEmpty(system.AutoDiscoveryUrl))
+    {
+        <div class="alert alert-warning">No auto-discovery URL configured for this system.</div>
+    }
+    else if (fetchResult is null)
+    {
+        <div class="alert alert-warning">Failed to reach the auto-discovery URL.</div>
+    }
+    else if (!fetchResult.Success)
+    {
+        <div class="alert alert-danger">
+            Auto-discovery responded <strong>@fetchResult.StatusCode</strong>.
+        </div>
+    }
+    else
+    {
+        <div class="row g-3 mb-3">
+            <div class="col-md-3">
+                <div class="card"><div class="card-body py-2 px-3">
+                    <div class="text-muted small">Last updated (UTC)</div>
+                    <div>@(discovery?.LastUpdatedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</div>
+                </div></div>
+            </div>
+            <div class="col-md-2">
+                <div class="card"><div class="card-body py-2 px-3">
+                    <div class="text-muted small">TTL</div>
+                    <div>@(discovery?.TtlSeconds is int s ? $"{s}s" : "—")</div>
+                </div></div>
+            </div>
+            <div class="col-md-2">
+                <div class="card"><div class="card-body py-2 px-3">
+                    <div class="text-muted small">Version</div>
+                    <div>@(discovery?.Version ?? "—")</div>
+                </div></div>
+            </div>
+            <div class="col-md-2">
+                <div class="card"><div class="card-body py-2 px-3">
+                    <div class="text-muted small">Feeds</div>
+                    <div>@(discovery?.Feeds.Count ?? 0)</div>
+                </div></div>
+            </div>
+            <div class="col-md-3">
+                <div class="card"><div class="card-body py-2 px-3">
+                    <div class="text-muted small">HTTP status / size</div>
+                    <div>@fetchResult.StatusCode &middot; @fetchResult.Body.Length.ToString("N0") bytes</div>
+                </div></div>
+            </div>
+        </div>
+
+        <h3 class="h6 mt-3">Available feeds</h3>
+
+        @if (discovery is null || discovery.Feeds.Count == 0)
+        {
+            <div class="alert alert-info">No feeds listed in the discovery document.</div>
+        }
+        else
+        {
+            <div class="table-responsive mb-3">
+                <table class="table table-sm table-striped table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Feed</th>
+                            <th>URL</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var f in discovery.Feeds)
+                        {
+                            <tr>
+                                <td><code>@f.Name</code></td>
+                                <td><small class="text-break"><a href="@f.Url" target="_blank" rel="noopener">@f.Url</a></small></td>
+                                <td class="text-end">
+                                    <a href="@($"/systems/{SystemId}/feeds/{f.Name}")" class="btn btn-sm btn-outline-primary">
+                                        Inspect &rarr;
+                                    </a>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <details class="mb-3">
+            <summary class="text-muted small">Raw gbfs.json</summary>
+            <pre class="bg-light p-3 rounded mt-2" style="max-height:400px; overflow:auto"><code>@prettyDiscovery</code></pre>
+        </details>
+    }
+}
+
+@code {
+    [Parameter] public string SystemId { get; set; } = "";
+
+    private GbfsSystem? system;
+    private FetchResult? fetchResult;
+    private DiscoveryInfo? discovery;
+    private string prettyDiscovery = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        system = await Db.GetBySystemIdAsync(SystemId);
+        if (system?.AutoDiscoveryUrl is null) return;
+
+        try
+        {
+            fetchResult = await Feed.FetchAsync(system.AutoDiscoveryUrl);
+        }
+        catch
+        {
+            fetchResult = null;
+            return;
+        }
+
+        if (fetchResult.Success)
+        {
+            discovery = GbfsFeedService.ParseDiscovery(fetchResult.Body);
+            prettyDiscovery = GbfsFeedService.PrettyPrintJson(fetchResult.Body);
+        }
+    }
+}

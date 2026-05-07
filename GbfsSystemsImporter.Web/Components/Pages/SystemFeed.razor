@@ -1,0 +1,138 @@
+@page "/systems/{SystemId}/feeds/{FeedName}"
+@using GbfsSystemsImporter.Services
+@inject DatabaseService Db
+@inject GbfsFeedService Feed
+
+<PageTitle>@SystemId / @FeedName</PageTitle>
+
+<p class="mb-2">
+    <a href="@($"/systems/{SystemId}")" class="text-decoration-none">&larr; back to @SystemId</a>
+</p>
+
+<h1 class="mb-1">@FeedName</h1>
+<p class="text-muted mb-3">
+    feed for <code>@SystemId</code>
+    @if (!string.IsNullOrEmpty(systemName))
+    {
+        <span> &middot; @systemName</span>
+    }
+</p>
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger">@errorMessage</div>
+}
+else if (feedFetch is not null)
+{
+    <div class="row g-3 mb-3">
+        <div class="col-md-7">
+            <div class="card"><div class="card-body py-2 px-3">
+                <div class="text-muted small">Feed URL</div>
+                <small class="text-break">
+                    <a href="@feedFetch.Url" target="_blank" rel="noopener">@feedFetch.Url</a>
+                </small>
+            </div></div>
+        </div>
+        <div class="col-md-2">
+            <div class="card"><div class="card-body py-2 px-3">
+                <div class="text-muted small">Status</div>
+                <div>
+                    @if (feedFetch.Success)
+                    {
+                        <span class="badge bg-success">@feedFetch.StatusCode</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-danger">@feedFetch.StatusCode</span>
+                    }
+                </div>
+            </div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body py-2 px-3">
+                <div class="text-muted small">Content type / size</div>
+                <div><small>@feedFetch.ContentType &middot; @feedFetch.Body.Length.ToString("N0") bytes</small></div>
+            </div></div>
+        </div>
+    </div>
+
+    @if (!feedFetch.Success)
+    {
+        <pre class="bg-light p-3 rounded"><code>@feedFetch.Body</code></pre>
+    }
+    else
+    {
+        <pre class="bg-light p-3 rounded" style="max-height:75vh; overflow:auto"><code>@prettyBody</code></pre>
+    }
+}
+
+@code {
+    [Parameter] public string SystemId { get; set; } = "";
+    [Parameter] public string FeedName { get; set; } = "";
+
+    private string? systemName;
+    private FetchResult? feedFetch;
+    private string prettyBody = "";
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var system = await Db.GetBySystemIdAsync(SystemId);
+        if (system is null)
+        {
+            errorMessage = $"System '{SystemId}' not found.";
+            return;
+        }
+        systemName = system.Name;
+
+        if (string.IsNullOrEmpty(system.AutoDiscoveryUrl))
+        {
+            errorMessage = "This system has no auto-discovery URL configured.";
+            return;
+        }
+
+        FetchResult discovery;
+        try
+        {
+            discovery = await Feed.FetchAsync(system.AutoDiscoveryUrl);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Couldn't reach the discovery URL: {ex.Message}";
+            return;
+        }
+
+        if (!discovery.Success)
+        {
+            errorMessage = $"Discovery URL responded {discovery.StatusCode}.";
+            return;
+        }
+
+        var feedUrl = GbfsFeedService.TryFindFeedUrl(discovery.Body, FeedName);
+        if (feedUrl is null)
+        {
+            var available = string.Join(", ", GbfsFeedService.ListFeedNames(discovery.Body));
+            errorMessage = $"Feed '{FeedName}' not listed in gbfs.json. Available: {available}";
+            return;
+        }
+
+        try
+        {
+            feedFetch = await Feed.FetchAsync(feedUrl);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Couldn't reach the feed URL: {ex.Message}";
+            return;
+        }
+
+        if (feedFetch.Success && feedFetch.ContentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            prettyBody = GbfsFeedService.PrettyPrintJson(feedFetch.Body);
+        }
+        else
+        {
+            prettyBody = feedFetch.Body;
+        }
+    }
+}

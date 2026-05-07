@@ -1,0 +1,417 @@
+@page "/map"
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using GbfsSystemsImporter.Services
+@inject DatabaseService Db
+@inject IConfiguration Config
+
+<PageTitle>Stations Map</PageTitle>
+
+<h1>Stations map</h1>
+
+@if (string.IsNullOrEmpty(apiKey))
+{
+    <div class="alert alert-warning">
+        No Google Maps API key configured. Set <code>GoogleMaps:ApiKey</code> in
+        <code>appsettings.Development.json</code> or via user secrets
+        (<code>dotnet user-secrets set "GoogleMaps:ApiKey" "YOUR_KEY"</code>).
+    </div>
+}
+
+@if (systems.Count == 0)
+{
+    <div class="alert alert-info">
+        No systems are enabled yet. Open <a href="/systems">Systems</a> and click
+        <strong>Enable</strong> on the ones you want to track.
+    </div>
+}
+else
+{
+    <form method="get" class="mb-3 d-flex align-items-center gap-2">
+        <label for="systemSelect" class="form-label mb-0">System:</label>
+        <select id="systemSelect" name="SystemId" class="form-select"
+                style="max-width:600px"
+                onchange="this.form.submit()">
+            <option value="">— select a system —</option>
+            @foreach (var s in systems)
+            {
+                <option value="@s.SystemId" selected="@(s.SystemId == SystemId)">
+                    @s.Name — @s.CountryCode / @s.Location (@s.StationCount stations)
+                </option>
+            }
+        </select>
+        <noscript><button class="btn btn-primary" type="submit">Show</button></noscript>
+    </form>
+
+    @if (!string.IsNullOrEmpty(SystemId))
+    {
+        <p class="text-muted mb-2">
+            Showing <strong>@stations.Count</strong> stations,
+            <strong>@bikes.Count</strong> free-floating bikes and
+            <strong>@zones.Count</strong> geofencing zones for
+            <code>@SystemId</code>.
+        </p>
+
+        <div class="d-flex flex-wrap gap-3 align-items-center mb-2">
+            @if (bikes.Count > 0)
+            {
+                <div class="form-check form-switch mb-0">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="toggle-bikes" checked/>
+                    <label class="form-check-label" for="toggle-bikes">
+                        Free-floating bikes (@bikes.Count)
+                    </label>
+                </div>
+            }
+            @if (stations.Count > 0)
+            {
+                <div class="d-flex flex-wrap gap-2 small text-muted">
+                    <span><span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:#198754;border:1px solid #fff"></span>operational</span>
+                    <span><span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:#dc3545;border:1px solid #fff"></span>empty</span>
+                    <span><span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:#fd7e14;border:1px solid #fff"></span>full</span>
+                    <span><span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:#212529;border:1px solid #fff"></span>closed</span>
+                    <span><span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:#6c757d;border:1px solid #fff"></span>no live data</span>
+                </div>
+            }
+        </div>
+    }
+}
+
+<div id="map" style="height:70vh; width:100%; border:1px solid #ccc; background:#f4f4f4"></div>
+
+@if (!string.IsNullOrEmpty(SystemId) && (stations.Count > 0 || bikes.Count > 0) && !string.IsNullOrEmpty(apiKey))
+{
+    <script type="application/json" id="gbfs-stations-data">@((MarkupString)stationsJson)</script>
+    <script type="application/json" id="gbfs-zones-data">@((MarkupString)zonesGeoJson)</script>
+    <script type="application/json" id="gbfs-bikes-data">@((MarkupString)bikesJson)</script>
+    <script>
+        window.initGbfsMap = function () {
+            const stations = JSON.parse(document.getElementById('gbfs-stations-data').textContent);
+            const zonesGeo = JSON.parse(document.getElementById('gbfs-zones-data').textContent);
+            const bikes    = JSON.parse(document.getElementById('gbfs-bikes-data').textContent);
+            const map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 0, lng: 0 },
+                zoom: 2,
+                mapTypeControl: false,
+                streetViewControl: false,
+            });
+            const bounds = new google.maps.LatLngBounds();
+
+            if (zonesGeo && zonesGeo.features && zonesGeo.features.length) {
+                map.data.addGeoJson(zonesGeo);
+                map.data.setStyle(function (feature) {
+                    const rideAllowed = feature.getProperty('rideAllowed');
+                    const rideThroughAllowed = feature.getProperty('rideThroughAllowed');
+                    const stationParking = feature.getProperty('stationParking');
+                    let fill = '#1f77b4';
+                    if (rideAllowed === false && rideThroughAllowed === false) fill = '#d62728';
+                    else if (rideAllowed === false) fill = '#ff7f0e';
+                    else if (stationParking === true) fill = '#2ca02c';
+                    return {
+                        fillColor: fill,
+                        fillOpacity: 0.18,
+                        strokeColor: fill,
+                        strokeWeight: 1.5,
+                        strokeOpacity: 0.9,
+                        clickable: true,
+                    };
+                });
+                const zoneInfo = new google.maps.InfoWindow();
+                map.data.addListener('click', function (e) {
+                    const name = e.feature.getProperty('name') || `Zone ${e.feature.getProperty('zoneIndex')}`;
+                    const rideAllowed = e.feature.getProperty('rideAllowed');
+                    const rideThroughAllowed = e.feature.getProperty('rideThroughAllowed');
+                    const stationParking = e.feature.getProperty('stationParking');
+                    const maxSpeed = e.feature.getProperty('maximumSpeedKph');
+                    const fmt = (v) => v == null ? '—' : (v === true ? 'yes' : v === false ? 'no' : String(v));
+                    zoneInfo.setContent(
+                        `<strong>${name}</strong><br>` +
+                        `<small>` +
+                        `ride allowed: ${fmt(rideAllowed)} &middot; ` +
+                        `ride through: ${fmt(rideThroughAllowed)} &middot; ` +
+                        `station parking: ${fmt(stationParking)}` +
+                        (maxSpeed != null ? ` &middot; max ${maxSpeed} kph` : '') +
+                        `</small>`);
+                    zoneInfo.setPosition(e.latLng);
+                    zoneInfo.open(map);
+                });
+                map.data.forEach(function (f) {
+                    f.getGeometry().forEachLatLng(function (ll) { bounds.extend(ll); });
+                });
+            }
+
+            // station marker styling driven by latest station_status snapshot
+            function stationColor(s) {
+                if (s.snapshotUtc == null) return '#6c757d';                       // grey: no live data yet
+                if (s.isRenting === false || s.isInstalled === false) return '#212529'; // black: closed/uninstalled
+                if (s.vehiclesAvailable === 0) return '#dc3545';                   // red: empty
+                if (s.docksAvailable === 0) return '#fd7e14';                      // orange: full
+                return '#198754';                                                  // green: operational
+            }
+            function stationIcon(s) {
+                return {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 10,
+                    fillColor: stationColor(s),
+                    fillOpacity: 0.92,
+                    strokeColor: '#fff',
+                    strokeWeight: 2,
+                };
+            }
+            function stationLabel(s) {
+                if (s.snapshotUtc == null) return null;
+                const n = s.vehiclesAvailable;
+                if (n == null) return null;
+                return { text: String(n), color: '#fff', fontSize: '11px', fontWeight: '600' };
+            }
+
+            const info = new google.maps.InfoWindow();
+            for (const s of stations) {
+                const pos = { lat: s.lat, lng: s.lon };
+                const opts = {
+                    position: pos,
+                    map,
+                    title: s.name || s.stationId,
+                    icon: stationIcon(s),
+                    zIndex: 5,
+                };
+                const lbl = stationLabel(s);
+                if (lbl) opts.label = lbl;
+                const marker = new google.maps.Marker(opts);
+
+                marker.addListener('click', () => {
+                    const fmt = (n) => (n == null ? '—' : n);
+                    const flagBadge = (b, on, off) => b === true
+                        ? `<span class="badge bg-success">${on}</span>`
+                        : (b === false ? `<span class="badge bg-secondary">${off}</span>` : '');
+                    const fmtAvg = (n) => (n == null ? '—' : Number(n).toFixed(1));
+                    const typeBreakdown = (s.vehicleTypes && s.vehicleTypes.length)
+                        ? `<tr><td style="padding-right:8px;vertical-align:top">by vehicle type</td><td>${
+                              s.vehicleTypes.map(t =>
+                                  `<div><code style="font-size:11px">${t.id}</code>: <strong>${t.count ?? 0}</strong></div>`
+                              ).join('')
+                          }</td></tr>`
+                        : '';
+                    const dailyAvg = (s.samplesToday && s.samplesToday > 0)
+                        ? `<tr><td style="padding-right:8px;vertical-align:top">today's avg</td><td><strong>${fmtAvg(s.avgVehiclesToday)}</strong> vehicles &middot; <strong>${fmtAvg(s.avgDocksToday)}</strong> docks <span class="text-muted">(${s.samplesToday} samples)</span></td></tr>`
+                        : '';
+                    const status = (s.snapshotUtc == null)
+                        ? `<span class="text-muted">no status snapshot yet</span>`
+                        : `<table style="font-size:12px;border-collapse:collapse;margin-top:4px">
+                             <tr><td style="padding-right:8px">vehicles available</td><td><strong>${fmt(s.vehiclesAvailable)}</strong>${s.vehiclesDisabled ? ` <span class="text-muted">(${s.vehiclesDisabled} disabled)</span>` : ''}</td></tr>
+                             ${typeBreakdown}
+                             <tr><td style="padding-right:8px">docks available</td><td><strong>${fmt(s.docksAvailable)}</strong>${s.docksDisabled ? ` <span class="text-muted">(${s.docksDisabled} disabled)</span>` : ''}</td></tr>
+                             <tr><td style="padding-right:8px">capacity</td><td>${fmt(s.capacity)}</td></tr>
+                             <tr><td style="padding-right:8px">renting / returning</td><td>${flagBadge(s.isRenting, 'renting', 'closed')} ${flagBadge(s.isReturning, 'returning', 'no return')}</td></tr>
+                             ${dailyAvg}
+                             <tr><td style="padding-right:8px">last reported</td><td>${s.lastReportedUtc ? new Date(s.lastReportedUtc).toLocaleString() : '—'}</td></tr>
+                             <tr><td style="padding-right:8px">snapshot taken</td><td>${s.snapshotUtc ? new Date(s.snapshotUtc).toLocaleString() : '—'}</td></tr>
+                           </table>`;
+                    info.setContent(
+                        `<div style="min-width:240px"><strong>${(s.name || s.stationId)}</strong>` +
+                        `<div class="text-muted small mb-1">${s.stationId}</div>` +
+                        status +
+                        `</div>`);
+                    info.open({ anchor: marker, map });
+                });
+                bounds.extend(pos);
+            }
+            const bikeInfo = new google.maps.InfoWindow();
+            const bikeMarkers = [];
+            for (const b of bikes) {
+                let fill = '#0d6efd';
+                if (b.isDisabled) fill = '#6c757d';
+                else if (b.isReserved) fill = '#fd7e14';
+                const m = new google.maps.Marker({
+                    position: { lat: b.lat, lng: b.lon },
+                    map,
+                    title: b.vehicleId,
+                    icon: {
+                        path: google.maps.SymbolPath.CIRCLE,
+                        scale: 4,
+                        fillColor: fill,
+                        fillOpacity: 0.85,
+                        strokeColor: '#222',
+                        strokeWeight: 0.5,
+                    },
+                    zIndex: 1,
+                });
+                m.addListener('click', () => {
+                    const range = (b.currentRangeMeters != null) ? `range ${(b.currentRangeMeters/1000).toFixed(1)} km` : null;
+                    const fuel  = (b.currentFuelPercent != null) ? `fuel ${Math.round(b.currentFuelPercent*100)}%` : null;
+                    const flags = [
+                        b.isReserved ? 'reserved' : null,
+                        b.isDisabled ? 'disabled' : null,
+                    ].filter(Boolean).join(', ') || 'available';
+                    const extras = [range, fuel].filter(Boolean).join(' · ');
+                    bikeInfo.setContent(
+                        `<strong>${b.vehicleId}</strong><br>` +
+                        `<small>${flags}${extras ? ' · ' + extras : ''}</small>` +
+                        (b.vehicleTypeId ? `<br><small class="text-muted">type: ${b.vehicleTypeId}</small>` : '')
+                    );
+                    bikeInfo.open({ anchor: m, map });
+                });
+                bikeMarkers.push(m);
+                bounds.extend({ lat: b.lat, lng: b.lon });
+            }
+
+            const toggle = document.getElementById('toggle-bikes');
+            if (toggle) {
+                toggle.addEventListener('change', () => {
+                    const target = toggle.checked ? map : null;
+                    for (const m of bikeMarkers) m.setMap(target);
+                });
+            }
+
+            if ((stations.length + bikes.length) === 1
+                && (!zonesGeo || !zonesGeo.features || !zonesGeo.features.length)) {
+                map.setCenter(bounds.getCenter());
+                map.setZoom(15);
+            } else if (!bounds.isEmpty()) {
+                map.fitBounds(bounds, 40);
+            }
+        };
+    </script>
+    <script async
+            src="https://maps.googleapis.com/maps/api/js?key=@apiKey&callback=initGbfsMap&v=weekly"></script>
+}
+
+@code {
+    [SupplyParameterFromQuery] public string? SystemId { get; set; }
+
+    private List<SystemOption> systems = new();
+    private List<MapStation> stations = new();
+    private List<MapGeofencingZone> zones = new();
+    private List<MapBike> bikes = new();
+    private string? apiKey;
+    private string stationsJson = "[]";
+    private string zonesGeoJson = """{"type":"FeatureCollection","features":[]}""";
+    private string bikesJson = "[]";
+
+    protected override async Task OnInitializedAsync()
+    {
+        apiKey = Config["GoogleMaps:ApiKey"];
+        systems = await Db.ListEnabledSystemsForMapAsync();
+        if (!string.IsNullOrEmpty(SystemId))
+        {
+            stations = await Db.GetStationsForMapAsync(SystemId);
+            stationsJson = JsonSerializer.Serialize(
+                stations.Select(s => new
+                {
+                    stationId = s.StationId,
+                    name = s.Name,
+                    lat = s.Lat,
+                    lon = s.Lon,
+                    capacity = s.Capacity,
+                    vehiclesAvailable = s.NumVehiclesAvailable,
+                    vehiclesDisabled = s.NumVehiclesDisabled,
+                    docksAvailable = s.NumDocksAvailable,
+                    docksDisabled = s.NumDocksDisabled,
+                    isInstalled = s.IsInstalled,
+                    isRenting = s.IsRenting,
+                    isReturning = s.IsReturning,
+                    lastReportedUtc = s.LastReportedUtc,
+                    snapshotUtc = s.LatestFetchedUtc,
+                    vehicleTypes = ParseVehicleTypes(s.VehicleTypesAvailableJson),
+                    avgVehiclesToday = s.AvgVehiclesAvailableToday,
+                    avgDocksToday = s.AvgDocksAvailableToday,
+                    samplesToday = s.SamplesToday,
+                }));
+
+            zones = await Db.GetGeofencingZonesForMapAsync(SystemId);
+            zonesGeoJson = BuildZonesFeatureCollection(zones);
+
+            bikes = await Db.GetLatestFreeBikesForMapAsync(SystemId);
+            bikesJson = JsonSerializer.Serialize(
+                bikes.Select(b => new
+                {
+                    vehicleId = b.VehicleId,
+                    lat = b.Lat,
+                    lon = b.Lon,
+                    isReserved = b.IsReserved,
+                    isDisabled = b.IsDisabled,
+                    vehicleTypeId = b.VehicleTypeId,
+                    currentRangeMeters = b.CurrentRangeMeters,
+                    currentFuelPercent = b.CurrentFuelPercent,
+                }));
+        }
+    }
+
+    private static object[] ParseVehicleTypes(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return Array.Empty<object>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return Array.Empty<object>();
+
+            var list = new List<object>();
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) continue;
+                var id = el.TryGetProperty("vehicle_type_id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                    ? idEl.GetString() : null;
+                int? count = el.TryGetProperty("count", out var cEl) && cEl.ValueKind == JsonValueKind.Number
+                    && cEl.TryGetInt32(out var n) ? n : null;
+                if (id is null) continue;
+                list.Add(new { id, count });
+            }
+            return list.ToArray();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<object>();
+        }
+    }
+
+    private static string BuildZonesFeatureCollection(List<MapGeofencingZone> zones)
+    {
+        var features = new JsonArray();
+        foreach (var z in zones)
+        {
+            JsonNode? geometry;
+            try { geometry = JsonNode.Parse(z.GeometryGeoJson); }
+            catch (JsonException) { continue; }
+            if (geometry is null) continue;
+
+            var firstRule = TryGetFirstRule(z.RulesJson);
+            var props = new JsonObject
+            {
+                ["zoneIndex"] = z.ZoneIndex,
+                ["name"] = z.Name,
+                ["rideAllowed"] = ReadBool(firstRule, "ride_allowed") ?? ReadBool(firstRule, "ride_start_allowed"),
+                ["rideThroughAllowed"] = ReadBool(firstRule, "ride_through_allowed"),
+                ["stationParking"] = ReadBool(firstRule, "station_parking"),
+                ["maximumSpeedKph"] = ReadInt(firstRule, "maximum_speed_kph"),
+            };
+            features.Add(new JsonObject
+            {
+                ["type"] = "Feature",
+                ["geometry"] = geometry,
+                ["properties"] = props,
+            });
+        }
+        var fc = new JsonObject
+        {
+            ["type"] = "FeatureCollection",
+            ["features"] = features,
+        };
+        return fc.ToJsonString();
+    }
+
+    private static JsonObject? TryGetFirstRule(string? rulesJson)
+    {
+        if (string.IsNullOrWhiteSpace(rulesJson)) return null;
+        try
+        {
+            return JsonNode.Parse(rulesJson) is JsonArray arr && arr.Count > 0 && arr[0] is JsonObject o ? o : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private static bool? ReadBool(JsonObject? o, string key) =>
+        o is not null && o.TryGetPropertyValue(key, out var v) && v is JsonValue jv && jv.TryGetValue<bool>(out var b) ? b : null;
+
+    private static int? ReadInt(JsonObject? o, string key) =>
+        o is not null && o.TryGetPropertyValue(key, out var v) && v is JsonValue jv && jv.TryGetValue<int>(out var i) ? i : null;
+}
